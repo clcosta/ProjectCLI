@@ -1,15 +1,18 @@
-import configparser
-import os, sys
 import argparse
+from ast import Tuple
+import configparser
+import os
+import sys
+
 from .utils import ProjectTools
 
 
 class ProjectCLI:
 
-    VERSION = "project 1.0.0"
+    VERSION = "project 1.1.0"
     CONFIG_INI = "project.ini"
 
-    TOOLS = ProjectTools()
+    tools = ProjectTools()
 
     def __load_project_ini(self, filename):
         full_path = os.path.abspath(os.path.join("./src", filename))
@@ -25,7 +28,7 @@ class ProjectCLI:
             return True
         return False
 
-    def __config(self):
+    def __config_parser(self):
         self.parser = argparse.ArgumentParser(
             prog="pyproject",
             description="Cria um ambiente virtual e inicia um projeto Python!",
@@ -38,37 +41,13 @@ class ProjectCLI:
 
     def __get_requirements(self, _type):
         if "requirements" in self.config[_type]:
-            requirements = self.config[_type]["requirements"].split("|")
+            requirements = self.config[_type]["requirements"].split("||")
             return requirements
-        return None
+        return []
 
     def __exists_args(self, parser):
-        def poped_dict(d, k):
-            d.pop(k)
-            return d
+        return any(set(filter(lambda value: value if value != '.' else None ,[v for k, v in parser._get_kwargs()])))
 
-        kwargs = dict(parser._get_kwargs())
-        kwargs = (
-            kwargs
-            if kwargs["project_dir"] != "."
-            else poped_dict(kwargs, "project_dir")
-        )
-        kwargs = (
-            kwargs if kwargs["auto"] == True else poped_dict(kwargs, "auto")
-        )
-        kwargs = kwargs if kwargs["type"] else poped_dict(kwargs, "type")
-        kwargs = (
-            kwargs if kwargs["no_types"] else poped_dict(kwargs, "no_types")
-        )
-        kwargs = (
-            kwargs
-            if kwargs["projectname"]
-            else poped_dict(kwargs, "projectname")
-        )
-
-        if kwargs:
-            return True
-        return False
 
     def __is_valid_type(self, _type):
         return any(ty for ty in self.config if ty == _type)
@@ -80,13 +59,20 @@ class ProjectCLI:
         print(f"\n Pyproject Accept Types:\n- \033[96m{valid_types}")
 
     def __get_commands(self, _type):
-        commands = self.config[_type]["command"].split("||")
-        return commands
+        if "command" in self.config[_type]:
+            commands = self.config[_type]["command"].split("||")
+            return commands
+        return []
+
+    def __format_projectname(self, projectname):
+        if not projectname:
+            projectname = (os.getcwd().replace(os.path.dirname(os.getcwd()) + "\\", ""))
+        return projectname.strip().lower().replace("-", "_")
 
     def __init__(self):
-        self.__config()
-        if self.__load_project_ini(self.CONFIG_INI):
-            self.__run()
+        self.__config_parser()
+        if self.__load_project_ini(self.CONFIG_INI): self.__run()
+
         self.parser.add_argument(
             "-v", "--version", action="version", version=self.VERSION
         )
@@ -112,16 +98,30 @@ class ProjectCLI:
             required=False,
         )
         self.parser.add_argument(
-            "-pd",
-            "--project_dir",
+            "-d",
+            "--projectdir",
             help='define em qual pasta será criada as dependencias, como o argumento final do "django-admin startproject (dir)", default="."',
             type=str,
             default=".",
         )
         self.parser.add_argument(
             "-at",
-            "--no-types",
+            "--all-types",
             help="Mostra todos os tipos de projetos aceitos",
+            action="store_true",
+            required=False,
+        )
+        self.parser.add_argument(
+            "-wr",
+            "--write-requirements",
+            help="Faz o pip freeze nos requirements",
+            action="store_true",
+            required=False,
+        )
+        self.parser.add_argument(
+            "-g",
+            '--git',
+            help="Iniciar um repositório git",
             action="store_true",
             required=False,
         )
@@ -130,48 +130,54 @@ class ProjectCLI:
         if parser_args and self.__exists_args(parser_args):
             _type = parser_args.type
             _auto = parser_args.auto
-            _project_dir = parser_args.project_dir
-            _no_types = parser_args.no_types
+            _projectdir = parser_args.projectdir
+            _all_types = parser_args.all_types
             _projectname = parser_args.projectname
+            _write_requirements = parser_args.write_requirements
+            _git = parser_args.git
             try:
-                if _auto:
-                    self.TOOLS.create_venv(_project_dir)
-                    self.TOOLS.execute_command(self.__get_commands("default"))
+                if _git: self.tools.start_git(_projectdir)
 
-                elif _no_types:
+                if _auto:
+                    self.tools.create_venv(_projectdir)
+                    self.tools.execute_command(self.__get_commands("default"))
+                    sys.exit(0)
+
+                elif _all_types:
                     self.__print_types()
-                    sys.exit(1)
+                    sys.exit(0)
 
                 elif _type:
                     _type = _type.strip()
-                    self.TOOLS.create_venv(_project_dir)
                     if self.__is_valid_type(_type):
-                        pip = self.TOOLS.get_pipenv(_project_dir)
+                        self.tools.create_venv(_projectdir)
+                        pip = self.tools.get_pipenv(_projectdir)
                         requirements = self.__get_requirements(_type)
-                        self.TOOLS.install_requirements(pip, requirements)
-                        if not _projectname:
-                            _projectname = (os.getcwd().replace(
-                                    os.path.dirname(os.getcwd()) + "\\", ""
-                                ).lower().replace("-", "_")
-                            )
-                        _projectname = _projectname.strip()
+                        self.tools.install_requirements(pip, requirements)
+
+                        _projectname = self.__format_projectname(_projectname)
+                        
                         commands = self.__get_commands(_type)
-                        if _type in ("flask", "django"):
-                            commands.append(f"{pip} freeze > requirements.txt")
-                        if _type == "django":
-                            pythonenv = self.TOOLS.get_pythonenv(_project_dir)
-                            commands[1] = commands[1].format(projectname=_projectname, dir=_project_dir)
-                            self.TOOLS.execute_command(commands, python=pythonenv)
-                            sys.exit(1)
-                        self.TOOLS.execute_command(commands)
-                        sys.exit(1)
+                        if _write_requirements: commands.append(f"{pip} freeze > requirements.txt")
+                        
+                        match _type:
+                            case "default":
+                                self.tools.execute_command(commands)
+                            case "django":
+                                pythonenv = self.tools.get_pythonenv(_projectdir)
+                                commands[1] = commands[1].format(projectname=_projectname, dir=_projectdir)
+                                self.tools.execute_command(commands, python=pythonenv, django=True)
+                            case _:
+                                self.tools.execute_command(commands)
+                        
+                        sys.exit(0)
                     else:
                         raise ValueError(
-                            f'Tipo de Projeto {_type} informado não é aceito, digite "pyproject --types" para mais informações!'
+                            f'Tipo de Projeto \"{_type}\" não é aceito, digite \033[0;33m"{self.parser.prog} --all-types"\033[00m para mais informações!'
                         )
             except Exception as e:
                 print("Argumento inválido: {}".format(e))
                 sys.exit(1)
         else:
             self.parser.print_help()
-            sys.exit(1)
+            sys.exit(0)
